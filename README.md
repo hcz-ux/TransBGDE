@@ -16,7 +16,13 @@ lässt sich auf Handy oder PC als App installieren (PWA).
   der andere benutzt.
 - Heller und dunkler Modus, für Handy und Desktop.
 
-## Starten
+## Schnellstart: eine einzige Datei
+
+`uebersetzer.html` enthält die ganze App in einer Datei. Herunterladen und per Doppelklick
+in **Chrome** oder **Edge** öffnen, fertig. Neu erzeugen nach Änderungen:
+`python3 build-single-file.py`.
+
+## Starten (Projektordner)
 
 Die Spracherkennung funktioniert nur über **HTTPS** oder **localhost**. Ein Doppelklick auf
 `index.html` reicht daher nicht. Starte stattdessen einen kleinen lokalen Server im Projektordner:
