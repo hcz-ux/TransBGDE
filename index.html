@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f6f5c">
+  <meta name="description" content="Echtzeit-Übersetzer Deutsch ⇄ Bulgarisch mit Spracheingabe und Sprachausgabe.">
+  <title>Übersetzer DE ⇄ BG</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>Übersetzer <span class="pair">DE ⇄ BG</span></h1>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" role="tab" aria-selected="true" data-tab="translator">Übersetzer</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="conversation">Gespräch</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Übersetzer: Text oder Sprache, live übersetzt -->
+    <section id="translator" class="view active" role="tabpanel">
+      <div class="lang-bar">
+        <span class="lang" id="sourceLabel">🇩🇪 Deutsch</span>
+        <button id="swapBtn" class="icon-btn" title="Sprachen tauschen" aria-label="Sprachen tauschen">⇄</button>
+        <span class="lang" id="targetLabel">🇧🇬 Bulgarisch</span>
+      </div>
+
+      <div class="panels">
+        <div class="panel">
+          <textarea id="sourceText" placeholder="Text eingeben oder Mikrofon antippen …" autofocus></textarea>
+          <div class="panel-actions">
+            <button id="clearBtn" class="small-btn" title="Leeren">✕ Leeren</button>
+            <span id="charCount" class="muted">0</span>
+          </div>
+        </div>
+        <div class="panel output">
+          <div id="targetText" class="output-text" aria-live="polite"></div>
+          <div class="panel-actions">
+            <button id="speakBtn" class="small-btn" title="Vorlesen">🔊 Vorlesen</button>
+            <button id="copyBtn" class="small-btn" title="Kopieren">⧉ Kopieren</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="mic-row">
+        <button id="micBtn" class="mic-btn" aria-pressed="false">
+          <span class="mic-icon">🎤</span>
+          <span id="micLabel">Sprechen</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Gespräch: zwei Personen sprechen abwechselnd -->
+    <section id="conversation" class="view" role="tabpanel" hidden>
+      <div id="chat" class="chat" aria-live="polite">
+        <p class="chat-empty muted">
+          Tippe auf deine Sprache und sprich. Die Übersetzung wird angezeigt und vorgelesen.<br>
+          Натиснете своя език и говорете. Преводът се показва и прочита на глас.
+        </p>
+      </div>
+      <div class="talk-row">
+        <button class="talk-btn" data-lang="de">
+          <span class="flag">🇩🇪</span>
+          <span>Deutsch sprechen</span>
+        </button>
+        <button class="talk-btn" data-lang="bg">
+          <span class="flag">🇧🇬</span>
+          <span>Говоря български</span>
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="settings">
+    <label><input type="checkbox" id="autoSpeak" checked> Übersetzung automatisch vorlesen</label>
+    <label>Dienst:
+      <select id="provider">
+        <option value="google">Google (kostenlos)</option>
+        <option value="mymemory">MyMemory (kostenlos)</option>
+      </select>
+    </label>
+    <p id="status" class="status" role="status"></p>
+  </footer>
+
+  <script src="translator.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
