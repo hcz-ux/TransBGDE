@@ -122,6 +122,8 @@
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const isIOSNonSafari = isIOS && /CriOS|FxiOS|EdgiOS|OPiOS/.test(navigator.userAgent);
+  // Safari (und andere iOS-Browser ohne eigene Spracherkennung) – nicht Chrome auf iOS.
+  const isIOSSafari = isIOS && !isIOSNonSafari;
   const IOS_HINT = 'Auf iPad/iPhone: Seite in Safari öffnen und unter Einstellungen → Allgemein → ' +
     'Tastatur die „Diktierfunktion“ einschalten.';
 
@@ -137,6 +139,32 @@
       case 'language-not-supported': return 'Diese Sprache wird von der Spracherkennung dieses Geräts nicht unterstützt.';
       default: return `Spracherkennung: ${error}`;
     }
+  }
+
+  // Safari-Fehler: Hat die Seite schon einmal Ton ausgegeben, bleibt das Audiosystem im
+  // Wiedergabe-Modus und die Spracherkennung hört nur Stille. Ein selbst geöffneter
+  // Mikrofon-Stream zwingt Safari während der Aufnahme in den Aufnahme-Modus.
+  // Nach dem Stopp wird er wieder geschlossen, damit das Vorlesen normal klingt.
+  const mic = { wanted: false, stream: null, pending: false };
+
+  function holdMicStream(force = false) {
+    if (!(isIOSSafari || force) || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    mic.wanted = true;
+    if (mic.stream || mic.pending) return;
+    mic.pending = true;
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => {
+        mic.stream = stream;
+        if (!mic.wanted) releaseMicStream();
+      })
+      .catch(() => { /* ohne Stream weiterversuchen */ })
+      .finally(() => { mic.pending = false; });
+  }
+
+  function releaseMicStream() {
+    mic.wanted = false;
+    if (mic.stream) mic.stream.getTracks().forEach((track) => track.stop());
+    mic.stream = null;
   }
 
   // ---------- Tab 1: Übersetzer ----------
@@ -347,6 +375,7 @@
     els.micLabel.textContent = source === 'de' ? 'Hört zu … (Stopp)' : 'Слушам … (Стоп)';
     setStatus('');
     cancelSpeech();
+    holdMicStream();
 
     const lang = source;
     const existing = els.sourceText.value.trim();
@@ -381,6 +410,7 @@
     els.micBtn.classList.remove('listening');
     els.micBtn.setAttribute('aria-pressed', 'false');
     els.micLabel.textContent = 'Sprechen';
+    releaseMicStream();
     if (!listener) return;
     if (discard) {
       listener.abort();
@@ -537,6 +567,7 @@
         if (talking && talking.listener === current) {
           talking = null;
           setTalkState(null);
+          releaseMicStream();
         }
         finish();
       },
@@ -582,8 +613,10 @@
     }
     cancelSpeech();
     setStatus('');
+    holdMicStream();
     talking = startTalking(lang);
     if (talking) setTalkState(lang);
+    else releaseMicStream();
   }
 
   function stopTalking({ discard = false } = {}) {
@@ -591,6 +624,7 @@
     const previous = talking;
     talking = null;
     setTalkState(null);
+    releaseMicStream();
     if (discard) previous.listener.abort();
     else previous.listener.stop();
     previous.finish();
@@ -598,18 +632,20 @@
 
   els.talkBtns.forEach((btn) => btn.addEventListener('click', () => talk(btn.dataset.lang)));
 
-  // Jedes andere Tippen (Reiter, Knöpfe, Textfeld …) schaltet die Sprachausgabe ebenfalls frei.
+  // Jedes andere Tippen (Reiter, Knöpfe, Textfeld …) schaltet die Sprachausgabe ebenfalls frei –
+  // außer in Safari, wo jede Tonausgabe die Spracherkennung stören kann.
   document.addEventListener('pointerup', (event) => {
-    if (!event.target.closest('#micBtn, .talk-btn')) unlockSpeech();
+    if (!isIOSSafari && !event.target.closest('#micBtn, .talk-btn, #diag')) unlockSpeech();
   });
 
   // ---------- Mikrofon-Test (Fehlersuche) ----------
-  // Startet eine einfache Erkennung ohne Extras und protokolliert jedes Ereignis, damit man
-  // sieht, an welcher Stelle der Browser hängen bleibt.
+  // Startet eine einfache Erkennung und protokolliert jedes Ereignis, damit man sieht, an
+  // welcher Stelle der Browser hängen bleibt. Test 1 öffnet dabei zusätzlich den
+  // Mikrofon-Stream (wie die App in Safari), Test 2 nicht.
   const diag = {
-    details: document.getElementById('diag'),
     log: document.getElementById('diagLog'),
     startBtn: document.getElementById('diagStart'),
+    plainBtn: document.getElementById('diagPlain'),
     copyBtn: document.getElementById('diagCopy'),
   };
   let diagStart = 0;
@@ -619,16 +655,22 @@
     diag.log.textContent += t + line + '\n';
   }
 
-  async function runMicTest() {
-    diag.log.textContent = '';
+  function runMicTest(withStream) {
+    if (diag.log.textContent) diag.log.textContent += '\n';
     diagStart = 0;
+    diagWrite(`=== Test ${withStream ? '1 (mit Mikrofon-Stream)' : '2 (ohne Extras)'} ===`);
     diagWrite(`Browser: ${navigator.userAgent}`);
-    diagWrite(`iOS: ${isIOS} · Spracherkennung vorhanden: ${Boolean(SpeechRecognition)} · Sprache: ${LANGS[source].speech}`);
+    diagWrite(`iOS: ${isIOS} · Safari: ${isIOSSafari} · Spracherkennung vorhanden: ${Boolean(SpeechRecognition)} · Sprache: ${LANGS[source].speech}`);
+    diagWrite(`Sprachausgabe in dieser Sitzung benutzt: ${speechUnlocked ? 'ja' : 'nein'}`);
     if (!SpeechRecognition) return;
     if (wantListening) stopListening();
     stopTalking();
     cancelSpeech();
     diagStart = performance.now();
+    if (withStream) {
+      holdMicStream(true);
+      diagWrite('Mikrofon-Stream angefordert');
+    }
 
     let rec;
     try {
@@ -645,14 +687,16 @@
       rec.onerror = (e) => diagWrite(`FEHLER: ${e.error}${e.message ? ' – ' + e.message : ''}`);
       rec.onend = () => {
         diagWrite('Ereignis: end – Test beendet');
-        testGetUserMedia();
+        if (withStream) diagWrite(`Mikrofon-Stream war aktiv: ${mic.stream ? 'ja' : 'nein'}`);
+        releaseMicStream();
+        if (!withStream) testGetUserMedia();
       };
       rec.start();
       diagWrite('start() aufgerufen – bitte jetzt etwas sagen …');
       setTimeout(() => { try { rec.stop(); } catch { /* schon beendet */ } }, 8000);
     } catch (err) {
       diagWrite(`FEHLER beim Start: ${err.name}: ${err.message}`);
-      testGetUserMedia();
+      releaseMicStream();
     }
   }
 
@@ -672,7 +716,8 @@
     }
   }
 
-  diag.startBtn.addEventListener('click', runMicTest);
+  diag.startBtn.addEventListener('click', () => runMicTest(true));
+  diag.plainBtn.addEventListener('click', () => runMicTest(false));
   diag.copyBtn.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(diag.log.textContent);
