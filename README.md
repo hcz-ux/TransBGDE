@@ -53,9 +53,9 @@ bzw. **„App installieren“**. Danach verhält sich die Seite wie eine normale
 | Spracheingabe        | ✅            | ✅                 | ❌      |
 | Sprachausgabe        | ✅            | ✅                 | ✅      |
 
-- **iPad/iPhone:** Dort nutzen alle Browser (auch Chrome) Apples Spracherkennung. Am
-  zuverlässigsten ist **Safari**; außerdem muss unter *Einstellungen → Allgemein → Tastatur*
-  die **Diktierfunktion** eingeschaltet sein.
+- **iPad/iPhone:** Bitte **Chrome** verwenden. Safari hat einen bekannten Fehler
+  ([WebKit-Bug 317741](https://bugs.webkit.org/show_bug.cgi?id=317741)): Die Aufnahme läuft,
+  aber die Spracherkennung bekommt keinen Ton. Die App zeigt in Safari dann einen Hinweis an.
 - Für die **bulgarische Sprachausgabe** muss auf dem Gerät eine bulgarische Stimme vorhanden
   sein. Microsoft Edge bringt eine mit, unter Android und iOS lässt sie sich in den
   Systemeinstellungen nachladen. Fehlt sie, zeigt die App einen Hinweis an.

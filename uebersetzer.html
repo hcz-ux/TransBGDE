@@ -525,6 +525,9 @@ main { flex: 1; display: flex; flex-direction: column; }
   const isIOSNonSafari = isIOS && /CriOS|FxiOS|EdgiOS|OPiOS/.test(navigator.userAgent);
   // Safari (und andere iOS-Browser ohne eigene Spracherkennung) – nicht Chrome auf iOS.
   const isIOSSafari = isIOS && !isIOSNonSafari;
+  const SAFARI_BUG_HINT = 'Safari hört nichts – das ist ein bekannter Fehler von Safari auf iPad/iPhone. ' +
+    'Bitte die Seite in Chrome öffnen, dort funktioniert die Spracheingabe. ' +
+    '(Alternativ prüfen: Einstellungen → Siri → Siri einschalten.)';
   const IOS_HINT = 'Auf iPad/iPhone: Seite in Safari öffnen und unter Einstellungen → Allgemein → ' +
     'Tastatur die „Diktierfunktion“ einschalten.';
 
@@ -620,6 +623,7 @@ main { flex: 1; display: flex; flex-direction: column; }
     let interimText = '';
     let error = null;
     let done = false;
+    let heardSpeech = false;
 
     const noAudioTimer = setTimeout(() => {
       if (!done) {
@@ -633,12 +637,16 @@ main { flex: 1; display: flex; flex-direction: column; }
       if (done) return;
       done = true;
       clearTimeout(noAudioTimer);
-      onDone({ text: (finalText + ' ' + interimText).trim(), error, aborted });
+      const text = (finalText + ' ' + interimText).trim();
+      // Safari-Fehler: Aufnahme läuft, aber es kommt nie Ton/Sprache an.
+      if (isIOSSafari && !aborted && !text && !heardSpeech && !error) setStatus(SAFARI_BUG_HINT, true);
+      onDone({ text, error, aborted });
     }
 
-    rec.onaudiostart = rec.onspeechstart = () => {
+    rec.onsoundstart = rec.onspeechstart = () => { heardSpeech = true; };
+    rec.onaudiostart = () => {
       clearTimeout(noAudioTimer);
-      if (els.status.classList.contains('error')) setStatus('');
+      if (els.status.classList.contains('error') && els.status.textContent !== SAFARI_BUG_HINT) setStatus('');
     };
 
     rec.onresult = (event) => {
@@ -651,6 +659,7 @@ main { flex: 1; display: flex; flex-direction: column; }
         else interimText += result[0].transcript + ' ';
       }
       clearTimeout(noAudioTimer);
+      heardSpeech = true;
       onText(finalText.trim(), interimText.trim());
     };
 
