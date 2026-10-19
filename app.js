@@ -104,17 +104,35 @@
     if (synth) synth.cancel();
   }
 
+  // iOS spielt Sprachausgabe erst ab, nachdem sie einmal direkt durch ein Tippen gestartet wurde.
+  let speechUnlocked = false;
+  function unlockSpeech() {
+    if (speechUnlocked || !synth) return;
+    speechUnlocked = true;
+    const utter = new SpeechSynthesisUtterance(' ');
+    utter.volume = 0;
+    synth.speak(utter);
+  }
+
   // ---------- Spracherkennung (gemeinsame Hilfen) ----------
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  // iPadOS meldet sich wie ein Mac, hat aber einen Touchscreen.
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isIOSNonSafari = isIOS && /CriOS|FxiOS|EdgiOS|OPiOS/.test(navigator.userAgent);
+  const IOS_HINT = 'Auf iPad/iPhone: Seite in Safari öffnen und unter Einstellungen → Allgemein → ' +
+    'Tastatur die „Diktierfunktion“ einschalten.';
 
   function recognitionErrorText(error) {
     switch (error) {
       case 'not-allowed':
       case 'service-not-allowed':
-        return 'Mikrofonzugriff verweigert. Bitte im Browser erlauben (Seite muss über HTTPS oder localhost laufen).';
+        return isIOS
+          ? `Spracherkennung nicht erlaubt. ${IOS_HINT}`
+          : 'Mikrofonzugriff verweigert. Bitte im Browser erlauben (Seite muss über HTTPS oder localhost laufen).';
       case 'audio-capture': return 'Mikrofon nicht erreichbar – evtl. von einer anderen App belegt (Anruf, Sprachassistent, andere Browser-Tabs). Diese schließen und erneut tippen.';
       case 'network': return 'Netzwerkfehler bei der Spracherkennung.';
-      case 'language-not-supported': return 'Diese Sprache wird von der Spracherkennung des Browsers nicht unterstützt.';
+      case 'language-not-supported': return 'Diese Sprache wird von der Spracherkennung dieses Geräts nicht unterstützt.';
       default: return `Spracherkennung: ${error}`;
     }
   }
@@ -157,13 +175,13 @@
     }
   }
 
-  // Eine Erkennungssitzung (ein Satz). Bewusst ohne "continuous"-Modus: der ist auf
-  // Android unzuverlässig. Stattdessen wird nach jedem Satz neu gestartet.
-  // onDone wird genau einmal aufgerufen – auch wenn der Browser kein "end"-Ereignis schickt.
+  // Eine Erkennungssitzung. Auf Android ohne "continuous"-Modus (dort unzuverlässig, es wird
+  // stattdessen nach jedem Satz neu gestartet); auf iOS mit, weil iOS Neustarts ohne Tippen
+  // oft blockiert. onDone wird genau einmal aufgerufen – auch ohne "end"-Ereignis.
   function listen(lang, { onText, onDone }) {
     const rec = new SpeechRecognition();
     rec.lang = LANGS[lang].speech;
-    rec.continuous = false;
+    rec.continuous = isIOS;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
 
@@ -171,13 +189,12 @@
     let interimText = '';
     let error = null;
     let done = false;
-    let stopTimer = null;
-    let resolveDone;
-    const finished = new Promise((resolve) => { resolveDone = resolve; });
 
     const noAudioTimer = setTimeout(() => {
       if (!done) {
-        setStatus('Das Mikrofon liefert keinen Ton. Mikrofon in den Browser-Einstellungen erlauben und die Seite direkt in Chrome öffnen (nicht in einer anderen App).', true);
+        setStatus(isIOS
+          ? `Das Mikrofon liefert keinen Ton. ${IOS_HINT}`
+          : 'Das Mikrofon liefert keinen Ton. Mikrofon in den Browser-Einstellungen erlauben und die Seite direkt in Chrome öffnen (nicht in einer anderen App).', true);
       }
     }, 4000);
 
@@ -185,12 +202,10 @@
       if (done) return;
       done = true;
       clearTimeout(noAudioTimer);
-      clearTimeout(stopTimer);
-      onDone({ text: (finalText || interimText).trim(), error, aborted });
-      resolveDone();
+      onDone({ text: (finalText + ' ' + interimText).trim(), error, aborted });
     }
 
-    rec.onaudiostart = () => {
+    rec.onaudiostart = rec.onspeechstart = () => {
       clearTimeout(noAudioTimer);
       if (els.status.classList.contains('error')) setStatus('');
     };
@@ -204,6 +219,7 @@
         if (result.isFinal) finalText += result[0].transcript + ' ';
         else interimText += result[0].transcript + ' ';
       }
+      clearTimeout(noAudioTimer);
       onText(finalText.trim(), interimText.trim());
     };
 
@@ -219,22 +235,19 @@
       finish();
     }
 
+    // Beides beendet sofort (synchron), damit direkt danach – noch im selben Tippen –
+    // eine neue Aufnahme gestartet werden kann. Nicht auf "end" warten: manche Geräte
+    // schicken es spät oder nie.
     return {
-      // Beenden und das bisher Gesagte behalten.
+      // Beenden und das bisher Gesagte (auch unsichere Wörter) behalten.
       stop() {
-        try { rec.stop(); } catch { /* bereits beendet */ }
-        clearTimeout(stopTimer);
-        stopTimer = setTimeout(() => {
-          try { rec.abort(); } catch { /* bereits beendet */ }
-          finish();
-        }, 1200);
-        return finished;
-      },
-      // Sofort beenden und das Gesagte verwerfen.
-      abort() {
+        finish();
         try { rec.abort(); } catch { /* bereits beendet */ }
+      },
+      // Beenden und das Gesagte verwerfen.
+      abort() {
         finish(true);
-        return finished;
+        try { rec.abort(); } catch { /* bereits beendet */ }
       },
     };
   }
@@ -247,7 +260,7 @@
   const MAX_RETRIES = 3;
   const MIC_RELEASE_DELAY = 300;
 
-  function listenContinuously(lang, { onText, onSegment, onFatal, startDelay = 0 }) {
+  function listenContinuously(lang, { onText, onSegment, onFatal }) {
     let active = true;
     let paused = false;
     let session = null;
@@ -286,14 +299,15 @@
       if (!ended) session = current;
     }
 
-    schedule(startDelay);
+    // Erster Start sofort – iOS erlaubt das Mikrofon nur direkt beim Tippen.
+    run();
 
     return {
-      // Beenden; das zuletzt Gesagte wird noch über onSegment geliefert.
-      async stop() {
+      // Beenden; das zuletzt Gesagte wird noch (synchron) über onSegment geliefert.
+      stop() {
         active = false;
         clearTimeout(timer);
-        if (session) await session.stop();
+        if (session) session.stop();
       },
       // Beenden und das gerade Gesagte verwerfen.
       abort() {
@@ -330,12 +344,14 @@
     els.micBtn.setAttribute('aria-pressed', 'true');
     els.micLabel.textContent = source === 'de' ? 'Hört zu … (Stopp)' : 'Слушам … (Стоп)';
     setStatus('');
+    cancelSpeech();
+    unlockSpeech();
 
     const lang = source;
     const existing = els.sourceText.value.trim();
     let base = existing ? existing + ' ' : '';
-    const current = listener = listenContinuously(lang, {
-      startDelay: speaking ? MIC_RELEASE_DELAY : 0,
+    let current = null;
+    current = listener = listenContinuously(lang, {
       onText(finalText, interim) {
         if (listener !== current) return;
         els.sourceText.value = (base + finalText + ' ' + interim).trim();
@@ -353,10 +369,9 @@
       },
       onFatal(error) {
         setStatus(recognitionErrorText(error), true);
-        if (listener === current) stopListening();
+        if (wantListening && (current === null || listener === current)) stopListening();
       },
     });
-    if (speaking) current.pause();
   }
 
   // discard: gerade Gesagtes verwerfen (beim Leeren/Tauschen), sonst behalten.
@@ -394,7 +409,7 @@
     renderLanguages();
     persist();
     runTranslate();
-    if (wasListening) setTimeout(startListening, 300);
+    if (wasListening) startListening();
   });
 
   els.clearBtn.addEventListener('click', () => {
@@ -403,7 +418,7 @@
     els.sourceText.value = '';
     runTranslate();
     els.sourceText.focus();
-    if (wasListening) setTimeout(startListening, 300);
+    if (wasListening) startListening();
   });
 
   els.speakBtn.addEventListener('click', () => {
@@ -427,7 +442,6 @@
   // Wort erscheint sofort, der Satz baut sich in der Blase auf und die Übersetzung wächst mit.
   // Antippen der anderen Sprache wechselt direkt.
   let talking = null; // { lang, listener, finish }
-  let talkToken = 0;
 
   function addBubble(lang) {
     const empty = els.chat.querySelector('.chat-empty');
@@ -450,7 +464,7 @@
     });
   }
 
-  function startTalking(lang, startDelay) {
+  function startTalking(lang) {
     const bubble = addBubble(lang);
     const originalEl = bubble.querySelector('.original');
     const translationEl = bubble.querySelector('.translation');
@@ -498,8 +512,9 @@
       finishBubble(bubble, lang, committed);
     }
 
-    const current = listenContinuously(lang, {
-      startDelay,
+    let failed = false;
+    let current = null;
+    current = listenContinuously(lang, {
       onText(finalText, interim) {
         if (!finished) show(finalText, interim);
       },
@@ -509,6 +524,7 @@
         show();
       },
       onFatal(error) {
+        failed = true;
         setStatus(recognitionErrorText(error), true);
         if (talking && talking.listener === current) {
           talking = null;
@@ -517,6 +533,7 @@
         finish();
       },
     });
+    if (failed) return null;
     return { lang, listener: current, finish };
   }
 
@@ -547,38 +564,26 @@
     }
   }
 
-  async function talk(lang) {
-    const token = ++talkToken;
+  // Alles synchron im Klick-Handler: iOS startet das Mikrofon nur direkt beim Tippen.
+  function talk(lang) {
     const previous = talking;
-    talking = null;
-    setTalkState(null);
-    let startDelay = speaking ? MIC_RELEASE_DELAY : 0;
-    if (previous) {
-      await previous.listener.stop();
-      previous.finish();
-      if (previous.lang === lang) return;
-      startDelay = MIC_RELEASE_DELAY; // dem Gerät Zeit geben, das Mikrofon freizugeben
-    }
-    if (token !== talkToken) return; // inzwischen erneut getippt
-
+    stopTalking();
+    if (previous && previous.lang === lang) return;
     cancelSpeech();
+    unlockSpeech();
     setStatus('');
-    talking = startTalking(lang, startDelay);
-    setTalkState(lang);
+    talking = startTalking(lang);
+    if (talking) setTalkState(lang);
   }
 
   function stopTalking({ discard = false } = {}) {
     if (!talking) return;
     const previous = talking;
     talking = null;
-    talkToken++;
     setTalkState(null);
-    if (discard) {
-      previous.listener.abort();
-      previous.finish();
-    } else {
-      previous.listener.stop().then(previous.finish);
-    }
+    if (discard) previous.listener.abort();
+    else previous.listener.stop();
+    previous.finish();
   }
 
   els.talkBtns.forEach((btn) => btn.addEventListener('click', () => talk(btn.dataset.lang)));
@@ -609,7 +614,11 @@
   if (!SpeechRecognition) {
     els.micBtn.disabled = true;
     els.talkBtns.forEach((btn) => { btn.disabled = true; });
-    setStatus('Spracherkennung wird von diesem Browser nicht unterstützt (Chrome, Edge oder Safari verwenden). Texteingabe funktioniert trotzdem.', true);
+    setStatus(isIOS
+      ? `Spracheingabe ist in diesem Browser nicht verfügbar. ${IOS_HINT} Texteingabe funktioniert trotzdem.`
+      : 'Spracherkennung wird von diesem Browser nicht unterstützt (Chrome, Edge oder Safari verwenden). Texteingabe funktioniert trotzdem.', true);
+  } else if (isIOSNonSafari) {
+    setStatus(`Hinweis: Falls das Mikrofon nicht reagiert – ${IOS_HINT}`);
   }
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
