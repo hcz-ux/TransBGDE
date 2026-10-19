@@ -88,6 +88,13 @@
       </select>
     </label>
     <p id="status" class="status" role="status"></p>
+    <details id="diag" class="diag">
+      <summary>🔧 Mikrofon-Test (falls die Spracheingabe nicht klappt)</summary>
+      <p class="muted">Auf „Test starten“ tippen und einen kurzen Satz sagen. Das Protokoll zeigt, was der Browser meldet.</p>
+      <button id="diagStart" class="small-btn">▶ Test starten</button>
+      <button id="diagCopy" class="small-btn">⧉ Protokoll kopieren</button>
+      <pre id="diagLog" class="diag-log"></pre>
+    </details>
   </footer>
 
   <script src="translator.js"></script>

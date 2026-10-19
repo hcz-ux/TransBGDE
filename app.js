@@ -105,6 +105,8 @@
   }
 
   // iOS spielt Sprachausgabe erst ab, nachdem sie einmal direkt durch ein Tippen gestartet wurde.
+  // Nicht im selben Tippen aufrufen, das eine Aufnahme startet: Safari schaltet sonst das Audio
+  // auf Wiedergabe um und die Spracherkennung bekommt keinen Ton.
   let speechUnlocked = false;
   function unlockSpeech() {
     if (speechUnlocked || !synth) return;
@@ -345,7 +347,6 @@
     els.micLabel.textContent = source === 'de' ? 'Hört zu … (Stopp)' : 'Слушам … (Стоп)';
     setStatus('');
     cancelSpeech();
-    unlockSpeech();
 
     const lang = source;
     const existing = els.sourceText.value.trim();
@@ -435,7 +436,14 @@
     }
   });
 
-  els.micBtn.addEventListener('click', () => (wantListening ? stopListening() : startListening()));
+  els.micBtn.addEventListener('click', () => {
+    if (!wantListening) {
+      startListening();
+      return;
+    }
+    stopListening();
+    unlockSpeech();
+  });
 
   // ---------- Tab 2: Gespräch ----------
   // Antippen startet die Aufnahme, die bis zum erneuten Antippen weiterläuft. Jedes erkannte
@@ -568,9 +576,11 @@
   function talk(lang) {
     const previous = talking;
     stopTalking();
-    if (previous && previous.lang === lang) return;
+    if (previous && previous.lang === lang) {
+      unlockSpeech(); // Stopp-Tippen: jetzt darf die Sprachausgabe freigeschaltet werden
+      return;
+    }
     cancelSpeech();
-    unlockSpeech();
     setStatus('');
     talking = startTalking(lang);
     if (talking) setTalkState(lang);
@@ -587,6 +597,90 @@
   }
 
   els.talkBtns.forEach((btn) => btn.addEventListener('click', () => talk(btn.dataset.lang)));
+
+  // Jedes andere Tippen (Reiter, Knöpfe, Textfeld …) schaltet die Sprachausgabe ebenfalls frei.
+  document.addEventListener('pointerup', (event) => {
+    if (!event.target.closest('#micBtn, .talk-btn')) unlockSpeech();
+  });
+
+  // ---------- Mikrofon-Test (Fehlersuche) ----------
+  // Startet eine einfache Erkennung ohne Extras und protokolliert jedes Ereignis, damit man
+  // sieht, an welcher Stelle der Browser hängen bleibt.
+  const diag = {
+    details: document.getElementById('diag'),
+    log: document.getElementById('diagLog'),
+    startBtn: document.getElementById('diagStart'),
+    copyBtn: document.getElementById('diagCopy'),
+  };
+  let diagStart = 0;
+
+  function diagWrite(line) {
+    const t = diagStart ? ((performance.now() - diagStart) / 1000).toFixed(1) + 's ' : '';
+    diag.log.textContent += t + line + '\n';
+  }
+
+  async function runMicTest() {
+    diag.log.textContent = '';
+    diagStart = 0;
+    diagWrite(`Browser: ${navigator.userAgent}`);
+    diagWrite(`iOS: ${isIOS} · Spracherkennung vorhanden: ${Boolean(SpeechRecognition)} · Sprache: ${LANGS[source].speech}`);
+    if (!SpeechRecognition) return;
+    if (wantListening) stopListening();
+    stopTalking();
+    cancelSpeech();
+    diagStart = performance.now();
+
+    let rec;
+    try {
+      rec = new SpeechRecognition();
+      rec.lang = LANGS[source].speech;
+      rec.continuous = false;
+      rec.interimResults = true;
+      ['start', 'audiostart', 'soundstart', 'speechstart', 'speechend', 'soundend', 'audioend', 'nomatch']
+        .forEach((name) => rec.addEventListener(name, () => diagWrite(`Ereignis: ${name}`)));
+      rec.onresult = (e) => {
+        const r = e.results[e.results.length - 1];
+        diagWrite(`Ergebnis${r.isFinal ? ' (fertig)' : ''}: „${r[0].transcript}“`);
+      };
+      rec.onerror = (e) => diagWrite(`FEHLER: ${e.error}${e.message ? ' – ' + e.message : ''}`);
+      rec.onend = () => {
+        diagWrite('Ereignis: end – Test beendet');
+        testGetUserMedia();
+      };
+      rec.start();
+      diagWrite('start() aufgerufen – bitte jetzt etwas sagen …');
+      setTimeout(() => { try { rec.stop(); } catch { /* schon beendet */ } }, 8000);
+    } catch (err) {
+      diagWrite(`FEHLER beim Start: ${err.name}: ${err.message}`);
+      testGetUserMedia();
+    }
+  }
+
+  // Prüft getrennt davon, ob der Browser überhaupt Ton vom Mikrofon bekommt.
+  async function testGetUserMedia() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      diagWrite('Mikrofon-Zugriff (getUserMedia): nicht verfügbar');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const track = stream.getAudioTracks()[0];
+      diagWrite(`Mikrofon-Zugriff: OK (${track ? track.label || 'Mikrofon' : 'keine Spur'})`);
+      stream.getTracks().forEach((t) => t.stop());
+    } catch (err) {
+      diagWrite(`Mikrofon-Zugriff: FEHLER ${err.name}: ${err.message}`);
+    }
+  }
+
+  diag.startBtn.addEventListener('click', runMicTest);
+  diag.copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(diag.log.textContent);
+      diag.copyBtn.textContent = '✓ Kopiert';
+    } catch {
+      diag.copyBtn.textContent = 'Kopieren nicht möglich – Text markieren';
+    }
+  });
 
   // ---------- Tabs & Einstellungen ----------
   els.tabs.forEach((tab) => tab.addEventListener('click', () => {
