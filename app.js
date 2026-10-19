@@ -124,11 +124,12 @@
   const isIOSNonSafari = isIOS && /CriOS|FxiOS|EdgiOS|OPiOS/.test(navigator.userAgent);
   // Safari (und andere iOS-Browser ohne eigene Spracherkennung) – nicht Chrome auf iOS.
   const isIOSSafari = isIOS && !isIOSNonSafari;
-  const SAFARI_BUG_HINT = 'Safari hört nichts – das ist ein bekannter Fehler von Safari auf iPad/iPhone. ' +
-    'Bitte die Seite in Chrome öffnen, dort funktioniert die Spracheingabe. ' +
-    '(Alternativ prüfen: Einstellungen → Siri → Siri einschalten.)';
-  const IOS_HINT = 'Auf iPad/iPhone: Seite in Safari öffnen und unter Einstellungen → Allgemein → ' +
-    'Tastatur die „Diktierfunktion“ einschalten.';
+  // Die Spracherkennung von iPad/iPhone läuft über Siri – ohne Siri hört sie nur Stille.
+  const SIRI_STEPS = 'Einstellungen → Siri → Siri einschalten und Einstellungen → Allgemein → ' +
+    'Tastatur → „Diktierfunktion“ einschalten. Danach den Tab schließen und die Seite neu öffnen.';
+  const SAFARI_BUG_HINT = `Das Mikrofon hört nichts. Bitte prüfen: ${SIRI_STEPS} ` +
+    'Hilft das nicht, die Seite in Chrome öffnen.';
+  const IOS_HINT = `Auf iPad/iPhone: ${SIRI_STEPS}`;
 
   function recognitionErrorText(error) {
     switch (error) {
@@ -651,6 +652,8 @@
   // Startet eine einfache Erkennung und protokolliert jedes Ereignis, damit man sieht, an
   // welcher Stelle der Browser hängen bleibt. Test 1 öffnet dabei zusätzlich den
   // Mikrofon-Stream (wie die App in Safari), Test 2 nicht.
+  // Nur sichtbar, wenn die Seite mit ?test geöffnet wird.
+  document.getElementById('diag').hidden = !new URLSearchParams(location.search).has('test');
   const diag = {
     log: document.getElementById('diagLog'),
     startBtn: document.getElementById('diagStart'),
@@ -765,8 +768,6 @@
     setStatus(isIOS
       ? `Spracheingabe ist in diesem Browser nicht verfügbar. ${IOS_HINT} Texteingabe funktioniert trotzdem.`
       : 'Spracherkennung wird von diesem Browser nicht unterstützt (Chrome, Edge oder Safari verwenden). Texteingabe funktioniert trotzdem.', true);
-  } else if (isIOSNonSafari) {
-    setStatus(`Hinweis: Falls das Mikrofon nicht reagiert – ${IOS_HINT}`);
   }
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {

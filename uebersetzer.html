@@ -250,7 +250,8 @@ main { flex: 1; display: flex; flex-direction: column; }
       </select>
     </label>
     <p id="status" class="status" role="status"></p>
-    <details id="diag" class="diag">
+    <!-- Mikrofon-Test zur Fehlersuche: nur mit ?test in der Adresse sichtbar -->
+    <details id="diag" class="diag" hidden>
       <summary>🔧 Mikrofon-Test (falls die Spracheingabe nicht klappt)</summary>
       <p class="muted">Einen Test antippen und einen kurzen Satz sagen (ca. 8 Sekunden). Das Protokoll zeigt, was der Browser meldet.</p>
       <button id="diagStart" class="small-btn">▶ Test 1</button>
@@ -525,11 +526,12 @@ main { flex: 1; display: flex; flex-direction: column; }
   const isIOSNonSafari = isIOS && /CriOS|FxiOS|EdgiOS|OPiOS/.test(navigator.userAgent);
   // Safari (und andere iOS-Browser ohne eigene Spracherkennung) – nicht Chrome auf iOS.
   const isIOSSafari = isIOS && !isIOSNonSafari;
-  const SAFARI_BUG_HINT = 'Safari hört nichts – das ist ein bekannter Fehler von Safari auf iPad/iPhone. ' +
-    'Bitte die Seite in Chrome öffnen, dort funktioniert die Spracheingabe. ' +
-    '(Alternativ prüfen: Einstellungen → Siri → Siri einschalten.)';
-  const IOS_HINT = 'Auf iPad/iPhone: Seite in Safari öffnen und unter Einstellungen → Allgemein → ' +
-    'Tastatur die „Diktierfunktion“ einschalten.';
+  // Die Spracherkennung von iPad/iPhone läuft über Siri – ohne Siri hört sie nur Stille.
+  const SIRI_STEPS = 'Einstellungen → Siri → Siri einschalten und Einstellungen → Allgemein → ' +
+    'Tastatur → „Diktierfunktion“ einschalten. Danach den Tab schließen und die Seite neu öffnen.';
+  const SAFARI_BUG_HINT = `Das Mikrofon hört nichts. Bitte prüfen: ${SIRI_STEPS} ` +
+    'Hilft das nicht, die Seite in Chrome öffnen.';
+  const IOS_HINT = `Auf iPad/iPhone: ${SIRI_STEPS}`;
 
   function recognitionErrorText(error) {
     switch (error) {
@@ -1052,6 +1054,8 @@ main { flex: 1; display: flex; flex-direction: column; }
   // Startet eine einfache Erkennung und protokolliert jedes Ereignis, damit man sieht, an
   // welcher Stelle der Browser hängen bleibt. Test 1 öffnet dabei zusätzlich den
   // Mikrofon-Stream (wie die App in Safari), Test 2 nicht.
+  // Nur sichtbar, wenn die Seite mit ?test geöffnet wird.
+  document.getElementById('diag').hidden = !new URLSearchParams(location.search).has('test');
   const diag = {
     log: document.getElementById('diagLog'),
     startBtn: document.getElementById('diagStart'),
@@ -1166,8 +1170,6 @@ main { flex: 1; display: flex; flex-direction: column; }
     setStatus(isIOS
       ? `Spracheingabe ist in diesem Browser nicht verfügbar. ${IOS_HINT} Texteingabe funktioniert trotzdem.`
       : 'Spracherkennung wird von diesem Browser nicht unterstützt (Chrome, Edge oder Safari verwenden). Texteingabe funktioniert trotzdem.', true);
-  } else if (isIOSNonSafari) {
-    setStatus(`Hinweis: Falls das Mikrofon nicht reagiert – ${IOS_HINT}`);
   }
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
