@@ -1,6 +1,6 @@
 // Service Worker: speichert die App-Dateien, damit sie schnell lädt und installierbar ist.
 // Übersetzungen selbst benötigen weiterhin eine Internetverbindung.
-const CACHE = 'dbg-translator-v2';
+const CACHE = 'dbg-translator-v3';
 const ASSETS = [
   './',
   'index.html',

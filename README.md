@@ -10,7 +10,9 @@ lässt sich auf Handy oder PC als App installieren (PWA).
 - **Spracheingabe**: Mikrofon antippen und sprechen. Der Text wird live erkannt und übersetzt.
 - **Sprachausgabe**: Die Übersetzung kann automatisch vorgelesen werden.
 - **Gesprächsmodus**: Zwei Personen sprechen abwechselnd. Jede tippt auf ihre Sprache
-  (🇩🇪 / 🇧🇬), die Übersetzung erscheint als Chat-Blase und wird vorgelesen.
+  (🇩🇪 / 🇧🇬). Der Text erscheint Wort für Wort und die Übersetzung wächst live mit. Erneutes
+  Antippen beendet die Aufnahme und liest die Übersetzung vor, Antippen der anderen Sprache
+  wechselt direkt.
 - **Sprachen tauschen** (⇄), Kopieren, Vorlesen auf Knopfdruck.
 - Zwei kostenlose Übersetzungsdienste (Google, MyMemory). Fällt einer aus, wird automatisch
   der andere benutzt.

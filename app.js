@@ -112,7 +112,7 @@
       case 'not-allowed':
       case 'service-not-allowed':
         return 'Mikrofonzugriff verweigert. Bitte im Browser erlauben (Seite muss über HTTPS oder localhost laufen).';
-      case 'audio-capture': return 'Kein Mikrofon gefunden.';
+      case 'audio-capture': return 'Mikrofon nicht erreichbar – evtl. von einer anderen App belegt (Anruf, Sprachassistent, andere Browser-Tabs). Diese schließen und erneut tippen.';
       case 'network': return 'Netzwerkfehler bei der Spracherkennung.';
       case 'language-not-supported': return 'Diese Sprache wird von der Spracherkennung des Browsers nicht unterstützt.';
       default: return `Spracherkennung: ${error}`;
@@ -239,56 +239,88 @@
     };
   }
 
-  const FATAL_ERRORS = ['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported'];
+  // Hört fortlaufend zu, bis stop() aufgerufen wird: nach jedem Satz wird eine neue Sitzung
+  // gestartet. Mikrofonfehler wie "audio-capture" treten oft nur kurz auf (das Mikrofon ist
+  // von der vorigen Aufnahme oder der Sprachausgabe noch belegt) – dann wird es mit kurzer
+  // Pause erneut versucht, statt sofort einen Fehler anzuzeigen.
+  const PERMISSION_ERRORS = ['not-allowed', 'service-not-allowed', 'language-not-supported'];
+  const MAX_RETRIES = 3;
+  const MIC_RELEASE_DELAY = 300;
 
-  let session = null;
-  let wantListening = false;
-  let pausedForSpeech = false;
+  function listenContinuously(lang, { onText, onSegment, onFatal, startDelay = 0 }) {
+    let active = true;
+    let paused = false;
+    let session = null;
+    let failures = 0;
+    let timer = null;
 
-  function startRecognition() {
-    if (session || !wantListening || pausedForSpeech) return;
-    const existing = els.sourceText.value.trim();
-    const base = existing ? existing + ' ' : '';
-    const lang = source;
-    let ended = false;
+    function schedule(delay) {
+      clearTimeout(timer);
+      timer = setTimeout(run, delay);
+    }
 
-    const current = listen(lang, {
-      onText(finalText, interim) {
-        els.sourceText.value = (base + finalText + ' ' + interim).trim();
-        els.sourceText.scrollTop = els.sourceText.scrollHeight;
-        els.targetText.classList.toggle('interim', Boolean(interim));
-        scheduleTranslate(interim ? 250 : 0);
-      },
-      async onDone({ text, error, aborted }) {
-        ended = true;
-        if (session === current) session = null;
-        els.targetText.classList.remove('interim');
-        els.sourceText.value = (base + text).trim();
-        scheduleTranslate(0);
-        if (error) {
-          setStatus(recognitionErrorText(error), true);
-          if (FATAL_ERRORS.includes(error)) {
-            stopListening();
+    function run() {
+      if (!active || paused || session) return;
+      let ended = false;
+      const current = listen(lang, {
+        onText,
+        onDone({ text, error, aborted }) {
+          ended = true;
+          if (session === current) session = null;
+          if (text && !aborted) onSegment(text);
+          if (!active || aborted) return;
+          if (!error) {
+            failures = 0;
+            schedule(MIC_RELEASE_DELAY);
             return;
           }
-        }
-        if (text && !aborted) await onFinalSegment(text, lang);
-        // Nach jedem Satz weiterhören, solange der Nutzer nicht gestoppt hat.
-        if (wantListening) setTimeout(startRecognition, error ? 1000 : 100);
+          failures++;
+          if (PERMISSION_ERRORS.includes(error) || failures > MAX_RETRIES) {
+            active = false;
+            onFatal(error);
+            return;
+          }
+          schedule(MIC_RELEASE_DELAY * 2 * failures);
+        },
+      });
+      if (!ended) session = current;
+    }
+
+    schedule(startDelay);
+
+    return {
+      // Beenden; das zuletzt Gesagte wird noch über onSegment geliefert.
+      async stop() {
+        active = false;
+        clearTimeout(timer);
+        if (session) await session.stop();
       },
-    });
-    // Bei einem Startfehler ist die Sitzung sofort beendet und darf nicht als aktiv gelten.
-    if (!ended) session = current;
+      // Beenden und das gerade Gesagte verwerfen.
+      abort() {
+        active = false;
+        clearTimeout(timer);
+        if (session) session.abort();
+      },
+      pause() {
+        paused = true;
+        clearTimeout(timer);
+        if (session) session.stop();
+      },
+      resume() {
+        paused = false;
+        if (active) schedule(MIC_RELEASE_DELAY);
+      },
+    };
   }
 
-  async function onFinalSegment(text, lang) {
+  let listener = null;
+  let wantListening = false;
+
+  function onFinalSegment(text, lang) {
     if (!els.autoSpeak.checked) return;
-    try {
-      const translated = await translator.translate(text, lang, other(lang));
-      await speak(translated, other(lang));
-    } catch (err) {
-      setStatus(`Übersetzung fehlgeschlagen: ${err.message}`, true);
-    }
+    translator.translate(text, lang, other(lang))
+      .then((translated) => speak(translated, other(lang)))
+      .catch((err) => setStatus(`Übersetzung fehlgeschlagen: ${err.message}`, true));
   }
 
   function startListening() {
@@ -298,33 +330,64 @@
     els.micBtn.setAttribute('aria-pressed', 'true');
     els.micLabel.textContent = source === 'de' ? 'Hört zu … (Stopp)' : 'Слушам … (Стоп)';
     setStatus('');
-    startRecognition();
+
+    const lang = source;
+    const existing = els.sourceText.value.trim();
+    let base = existing ? existing + ' ' : '';
+    const current = listener = listenContinuously(lang, {
+      startDelay: speaking ? MIC_RELEASE_DELAY : 0,
+      onText(finalText, interim) {
+        if (listener !== current) return;
+        els.sourceText.value = (base + finalText + ' ' + interim).trim();
+        els.sourceText.scrollTop = els.sourceText.scrollHeight;
+        els.targetText.classList.toggle('interim', Boolean(interim));
+        scheduleTranslate(interim ? 250 : 0);
+      },
+      onSegment(text) {
+        if (listener !== current) return;
+        base += text + ' ';
+        els.sourceText.value = base.trim();
+        els.targetText.classList.remove('interim');
+        scheduleTranslate(0);
+        onFinalSegment(text, lang);
+      },
+      onFatal(error) {
+        setStatus(recognitionErrorText(error), true);
+        if (listener === current) stopListening();
+      },
+    });
+    if (speaking) current.pause();
   }
 
-  function stopListening() {
+  // discard: gerade Gesagtes verwerfen (beim Leeren/Tauschen), sonst behalten.
+  function stopListening({ discard = false } = {}) {
     wantListening = false;
     els.micBtn.classList.remove('listening');
     els.micBtn.setAttribute('aria-pressed', 'false');
     els.micLabel.textContent = 'Sprechen';
-    if (session) session.stop();
+    if (!listener) return;
+    if (discard) {
+      listener.abort();
+      listener = null;
+    } else {
+      listener.stop();
+    }
   }
 
   // Während der Sprachausgabe nicht zuhören, damit die App sich nicht selbst erkennt.
   function pauseRecognitionForSpeech() {
-    pausedForSpeech = true;
-    if (session) session.stop();
+    if (listener && wantListening) listener.pause();
   }
 
   function resumeRecognitionAfterSpeech() {
-    pausedForSpeech = false;
-    startRecognition();
+    if (listener && wantListening) listener.resume();
   }
 
   els.sourceText.addEventListener('input', () => scheduleTranslate(400));
 
   els.swapBtn.addEventListener('click', () => {
     const wasListening = wantListening;
-    if (wasListening) stopListening();
+    if (wasListening) stopListening({ discard: true });
     source = other(source);
     const translated = els.targetText.textContent;
     els.sourceText.value = translated;
@@ -336,7 +399,7 @@
 
   els.clearBtn.addEventListener('click', () => {
     const wasListening = wantListening;
-    if (wasListening) stopListening();
+    if (wasListening) stopListening({ discard: true });
     els.sourceText.value = '';
     runTranslate();
     els.sourceText.focus();
@@ -360,15 +423,20 @@
   els.micBtn.addEventListener('click', () => (wantListening ? stopListening() : startListening()));
 
   // ---------- Tab 2: Gespräch ----------
-  const conversation = { session: null, lang: null };
+  // Antippen startet die Aufnahme, die bis zum erneuten Antippen weiterläuft. Jedes erkannte
+  // Wort erscheint sofort, der Satz baut sich in der Blase auf und die Übersetzung wächst mit.
+  // Antippen der anderen Sprache wechselt direkt.
+  let talking = null; // { lang, listener, finish }
+  let talkToken = 0;
 
   function addBubble(lang) {
     const empty = els.chat.querySelector('.chat-empty');
     if (empty) empty.remove();
     const bubble = document.createElement('div');
-    bubble.className = `bubble ${lang}`;
-    bubble.innerHTML = '<div class="original interim" lang="' + lang + '">…</div>' +
-      '<div class="translation" lang="' + other(lang) + '"></div>';
+    bubble.className = `bubble ${lang} live`;
+    bubble.innerHTML = '<div class="original" lang="' + lang + '"></div>' +
+      '<div class="translation interim" lang="' + other(lang) + '"></div>';
+    bubble.querySelector('.original').innerHTML = '<span class="interim">…</span>';
     els.chat.appendChild(bubble);
     els.chat.scrollTop = els.chat.scrollHeight;
     return bubble;
@@ -382,6 +450,76 @@
     });
   }
 
+  function startTalking(lang, startDelay) {
+    const bubble = addBubble(lang);
+    const originalEl = bubble.querySelector('.original');
+    const translationEl = bubble.querySelector('.translation');
+    let committed = '';
+    let finished = false;
+    let liveTimer = null;
+    let liveController = null;
+
+    // Erkannter Text: fertige Wörter normal, noch unsichere Wörter grau.
+    function show(confirmed = '', pending = '') {
+      const solid = (committed + ' ' + confirmed).trim();
+      originalEl.textContent = solid;
+      const rest = pending.trim();
+      if (rest) {
+        const span = document.createElement('span');
+        span.className = 'interim';
+        span.textContent = (solid ? ' ' : '') + rest;
+        originalEl.appendChild(span);
+      }
+      if (!solid && !rest) originalEl.innerHTML = '<span class="interim">…</span>';
+      els.chat.scrollTop = els.chat.scrollHeight;
+      clearTimeout(liveTimer);
+      liveTimer = setTimeout(() => translateLive((solid + ' ' + rest).trim()), 350);
+    }
+
+    async function translateLive(text) {
+      if (finished || !text) return;
+      if (liveController) liveController.abort();
+      const controller = liveController = new AbortController();
+      try {
+        const translated = await translator.translate(text, lang, other(lang), { signal: controller.signal });
+        if (!finished && controller === liveController) {
+          translationEl.textContent = translated;
+          els.chat.scrollTop = els.chat.scrollHeight;
+        }
+      } catch { /* Live-Vorschau: Fehler erst beim Abschluss melden */ }
+    }
+
+    function finish() {
+      if (finished) return;
+      finished = true;
+      clearTimeout(liveTimer);
+      if (liveController) liveController.abort();
+      bubble.classList.remove('live');
+      finishBubble(bubble, lang, committed);
+    }
+
+    const current = listenContinuously(lang, {
+      startDelay,
+      onText(finalText, interim) {
+        if (!finished) show(finalText, interim);
+      },
+      onSegment(text) {
+        if (finished) return;
+        committed = (committed + ' ' + text).trim();
+        show();
+      },
+      onFatal(error) {
+        setStatus(recognitionErrorText(error), true);
+        if (talking && talking.listener === current) {
+          talking = null;
+          setTalkState(null);
+        }
+        finish();
+      },
+    });
+    return { lang, listener: current, finish };
+  }
+
   async function finishBubble(bubble, lang, text) {
     const originalEl = bubble.querySelector('.original');
     const translationEl = bubble.querySelector('.translation');
@@ -390,8 +528,8 @@
       return;
     }
     originalEl.textContent = text;
-    originalEl.classList.remove('interim');
-    translationEl.textContent = '…';
+    translationEl.classList.remove('interim');
+    if (!translationEl.textContent) translationEl.textContent = '…';
     try {
       const translated = await translator.translate(text, lang, other(lang));
       translationEl.textContent = translated;
@@ -409,48 +547,38 @@
     }
   }
 
-  // Antippen startet die Aufnahme; erneutes Antippen stoppt sie.
-  // Die andere Sprache kann jederzeit angetippt werden – dann wird direkt gewechselt.
   async function talk(lang) {
-    const running = conversation.session;
-    const runningLang = conversation.lang;
-    if (running) {
-      conversation.session = null;
-      conversation.lang = null;
-      setTalkState(null);
-      await running.stop();
-      if (runningLang === lang) return;
+    const token = ++talkToken;
+    const previous = talking;
+    talking = null;
+    setTalkState(null);
+    let startDelay = speaking ? MIC_RELEASE_DELAY : 0;
+    if (previous) {
+      await previous.listener.stop();
+      previous.finish();
+      if (previous.lang === lang) return;
+      startDelay = MIC_RELEASE_DELAY; // dem Gerät Zeit geben, das Mikrofon freizugeben
     }
-    if (conversation.session) return; // inzwischen anderweitig gestartet
+    if (token !== talkToken) return; // inzwischen erneut getippt
 
     cancelSpeech();
     setStatus('');
-    const bubble = addBubble(lang);
-    const originalEl = bubble.querySelector('.original');
-
-    let ended = false;
-    let current = null;
-    current = listen(lang, {
-      onText(finalText, interim) {
-        originalEl.textContent = (finalText + ' ' + interim).trim() || '…';
-        els.chat.scrollTop = els.chat.scrollHeight;
-      },
-      onDone({ text, error, aborted }) {
-        ended = true;
-        if (conversation.session === current) {
-          conversation.session = null;
-          conversation.lang = null;
-          setTalkState(null);
-        }
-        if (error) setStatus(recognitionErrorText(error), true);
-        finishBubble(bubble, lang, aborted ? '' : text);
-      },
-    });
-    // Bei einem Startfehler ist die Sitzung sofort beendet und darf nicht als aktiv gelten.
-    if (ended) return;
-    conversation.session = current;
-    conversation.lang = lang;
+    talking = startTalking(lang, startDelay);
     setTalkState(lang);
+  }
+
+  function stopTalking({ discard = false } = {}) {
+    if (!talking) return;
+    const previous = talking;
+    talking = null;
+    talkToken++;
+    setTalkState(null);
+    if (discard) {
+      previous.listener.abort();
+      previous.finish();
+    } else {
+      previous.listener.stop().then(previous.finish);
+    }
   }
 
   els.talkBtns.forEach((btn) => btn.addEventListener('click', () => talk(btn.dataset.lang)));
@@ -458,11 +586,7 @@
   // ---------- Tabs & Einstellungen ----------
   els.tabs.forEach((tab) => tab.addEventListener('click', () => {
     if (wantListening) stopListening();
-    if (conversation.session) {
-      conversation.session.abort();
-      conversation.session = null;
-      setTalkState(null);
-    }
+    stopTalking();
     els.tabs.forEach((t) => {
       const active = t === tab;
       t.classList.toggle('active', active);
