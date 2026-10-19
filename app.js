@@ -157,72 +157,135 @@
     }
   }
 
-  let recognition = null;
-  let wantListening = false;
-  let pausedForSpeech = false;
-
-  function startRecognition() {
-    if (recognition) return;
-    const rec = recognition = new SpeechRecognition();
-    rec.lang = LANGS[source].speech;
-    rec.continuous = true;
+  // Eine Erkennungssitzung (ein Satz). Bewusst ohne "continuous"-Modus: der ist auf
+  // Android unzuverlässig. Stattdessen wird nach jedem Satz neu gestartet.
+  // onDone wird genau einmal aufgerufen – auch wenn der Browser kein "end"-Ereignis schickt.
+  function listen(lang, { onText, onDone }) {
+    const rec = new SpeechRecognition();
+    rec.lang = LANGS[lang].speech;
+    rec.continuous = false;
     rec.interimResults = true;
+    rec.maxAlternatives = 1;
 
-    const existing = els.sourceText.value.trim();
-    const base = existing ? existing + ' ' : '';
-    let finals = '';
+    let finalText = '';
+    let interimText = '';
+    let error = null;
+    let done = false;
+    let stopTimer = null;
+    let resolveDone;
+    const finished = new Promise((resolve) => { resolveDone = resolve; });
+
+    const noAudioTimer = setTimeout(() => {
+      if (!done) {
+        setStatus('Das Mikrofon liefert keinen Ton. Mikrofon in den Browser-Einstellungen erlauben und die Seite direkt in Chrome öffnen (nicht in einer anderen App).', true);
+      }
+    }, 4000);
+
+    function finish(aborted = false) {
+      if (done) return;
+      done = true;
+      clearTimeout(noAudioTimer);
+      clearTimeout(stopTimer);
+      onDone({ text: (finalText || interimText).trim(), error, aborted });
+      resolveDone();
+    }
+
+    rec.onaudiostart = () => {
+      clearTimeout(noAudioTimer);
+      if (els.status.classList.contains('error')) setStatus('');
+    };
 
     rec.onresult = (event) => {
-      let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      // Immer alle Ergebnisse neu zusammensetzen – robuster als event.resultIndex.
+      finalText = '';
+      interimText = '';
+      for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i];
-        const transcript = result[0].transcript.trim();
-        if (!transcript) continue;
-        if (result.isFinal) {
-          finals += transcript + ' ';
-          onFinalSegment(transcript, source);
-        } else {
-          interim += transcript + ' ';
-        }
+        if (result.isFinal) finalText += result[0].transcript + ' ';
+        else interimText += result[0].transcript + ' ';
       }
-      els.sourceText.value = (base + finals + interim).trimEnd();
-      els.sourceText.scrollTop = els.sourceText.scrollHeight;
-      scheduleTranslate(interim ? 250 : 0);
+      onText(finalText.trim(), interimText.trim());
     };
 
     rec.onerror = (event) => {
-      if (event.error === 'no-speech' || event.error === 'aborted') return;
-      setStatus(recognitionErrorText(event.error), true);
-      if (['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported'].includes(event.error)) {
-        stopListening();
-      }
+      if (event.error !== 'no-speech' && event.error !== 'aborted') error = event.error;
     };
-
-    // Browser beenden die Erkennung nach einer Pause von selbst – solange der Nutzer
-    // zuhören möchte, wird sie neu gestartet.
-    rec.onend = () => {
-      if (recognition === rec) recognition = null;
-      // Nicht abgeschlossene Zwischenergebnisse verwerfen, damit sie beim Neustart nicht doppelt erscheinen.
-      if (finals || els.sourceText.value !== existing) {
-        els.sourceText.value = (base + finals).trimEnd();
-        scheduleTranslate(0);
-      }
-      if (wantListening && !pausedForSpeech) setTimeout(() => wantListening && !pausedForSpeech && startRecognition(), 150);
-    };
+    rec.onend = () => finish();
 
     try {
       rec.start();
     } catch (err) {
-      recognition = null;
-      setStatus(`Spracherkennung konnte nicht starten: ${err.message}`, true);
+      error = err.message;
+      finish();
     }
+
+    return {
+      // Beenden und das bisher Gesagte behalten.
+      stop() {
+        try { rec.stop(); } catch { /* bereits beendet */ }
+        clearTimeout(stopTimer);
+        stopTimer = setTimeout(() => {
+          try { rec.abort(); } catch { /* bereits beendet */ }
+          finish();
+        }, 1200);
+        return finished;
+      },
+      // Sofort beenden und das Gesagte verwerfen.
+      abort() {
+        try { rec.abort(); } catch { /* bereits beendet */ }
+        finish(true);
+        return finished;
+      },
+    };
+  }
+
+  const FATAL_ERRORS = ['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported'];
+
+  let session = null;
+  let wantListening = false;
+  let pausedForSpeech = false;
+
+  function startRecognition() {
+    if (session || !wantListening || pausedForSpeech) return;
+    const existing = els.sourceText.value.trim();
+    const base = existing ? existing + ' ' : '';
+    const lang = source;
+    let ended = false;
+
+    const current = listen(lang, {
+      onText(finalText, interim) {
+        els.sourceText.value = (base + finalText + ' ' + interim).trim();
+        els.sourceText.scrollTop = els.sourceText.scrollHeight;
+        els.targetText.classList.toggle('interim', Boolean(interim));
+        scheduleTranslate(interim ? 250 : 0);
+      },
+      async onDone({ text, error, aborted }) {
+        ended = true;
+        if (session === current) session = null;
+        els.targetText.classList.remove('interim');
+        els.sourceText.value = (base + text).trim();
+        scheduleTranslate(0);
+        if (error) {
+          setStatus(recognitionErrorText(error), true);
+          if (FATAL_ERRORS.includes(error)) {
+            stopListening();
+            return;
+          }
+        }
+        if (text && !aborted) await onFinalSegment(text, lang);
+        // Nach jedem Satz weiterhören, solange der Nutzer nicht gestoppt hat.
+        if (wantListening) setTimeout(startRecognition, error ? 1000 : 100);
+      },
+    });
+    // Bei einem Startfehler ist die Sitzung sofort beendet und darf nicht als aktiv gelten.
+    if (!ended) session = current;
   }
 
   async function onFinalSegment(text, lang) {
     if (!els.autoSpeak.checked) return;
     try {
       const translated = await translator.translate(text, lang, other(lang));
-      speak(translated, other(lang));
+      await speak(translated, other(lang));
     } catch (err) {
       setStatus(`Übersetzung fehlgeschlagen: ${err.message}`, true);
     }
@@ -243,18 +306,18 @@
     els.micBtn.classList.remove('listening');
     els.micBtn.setAttribute('aria-pressed', 'false');
     els.micLabel.textContent = 'Sprechen';
-    if (recognition) recognition.stop();
+    if (session) session.stop();
   }
 
+  // Während der Sprachausgabe nicht zuhören, damit die App sich nicht selbst erkennt.
   function pauseRecognitionForSpeech() {
     pausedForSpeech = true;
-    if (recognition) recognition.stop();
-    if (conversation.rec) conversation.rec.abort();
+    if (session) session.stop();
   }
 
   function resumeRecognitionAfterSpeech() {
     pausedForSpeech = false;
-    if (wantListening) startRecognition();
+    startRecognition();
   }
 
   els.sourceText.addEventListener('input', () => scheduleTranslate(400));
@@ -297,14 +360,14 @@
   els.micBtn.addEventListener('click', () => (wantListening ? stopListening() : startListening()));
 
   // ---------- Tab 2: Gespräch ----------
-  const conversation = { rec: null, lang: null };
+  const conversation = { session: null, lang: null };
 
   function addBubble(lang) {
     const empty = els.chat.querySelector('.chat-empty');
     if (empty) empty.remove();
     const bubble = document.createElement('div');
     bubble.className = `bubble ${lang}`;
-    bubble.innerHTML = '<div class="original interim" lang="' + lang + '"></div>' +
+    bubble.innerHTML = '<div class="original interim" lang="' + lang + '">…</div>' +
       '<div class="translation" lang="' + other(lang) + '"></div>';
     els.chat.appendChild(bubble);
     els.chat.scrollTop = els.chat.scrollHeight;
@@ -315,84 +378,79 @@
     els.talkBtns.forEach((btn) => {
       const isActive = btn.dataset.lang === activeLang;
       btn.classList.toggle('listening', isActive);
-      btn.disabled = activeLang !== null && !isActive;
+      btn.setAttribute('aria-pressed', String(isActive));
     });
   }
 
-  function talk(lang) {
-    if (conversation.rec) {
-      conversation.rec.stop();
-      return;
-    }
-    cancelSpeech();
-
-    const rec = new SpeechRecognition();
-    rec.lang = LANGS[lang].speech;
-    rec.continuous = false;
-    rec.interimResults = true;
-    conversation.rec = rec;
-    conversation.lang = lang;
-    setTalkState(lang);
-    setStatus('');
-
-    const bubble = addBubble(lang);
+  async function finishBubble(bubble, lang, text) {
     const originalEl = bubble.querySelector('.original');
     const translationEl = bubble.querySelector('.translation');
-    let finalText = '';
-
-    rec.onresult = (event) => {
-      let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) finalText += result[0].transcript;
-        else interim += result[0].transcript;
-      }
-      originalEl.textContent = (finalText + ' ' + interim).trim();
-      els.chat.scrollTop = els.chat.scrollHeight;
-    };
-
-    rec.onerror = (event) => {
-      if (event.error !== 'no-speech' && event.error !== 'aborted') {
-        setStatus(recognitionErrorText(event.error), true);
-      }
-    };
-
-    rec.onend = async () => {
-      conversation.rec = null;
-      setTalkState(null);
-      const text = (finalText || originalEl.textContent).trim();
-      if (!text) {
-        bubble.remove();
-        return;
-      }
-      originalEl.textContent = text;
-      originalEl.classList.remove('interim');
-      translationEl.textContent = '…';
-      try {
-        const translated = await translator.translate(text, lang, other(lang));
-        translationEl.textContent = translated;
-        const replay = document.createElement('button');
-        replay.className = 'small-btn';
-        replay.textContent = '🔊';
-        replay.title = 'Erneut vorlesen';
-        replay.addEventListener('click', () => speak(translated, other(lang)));
-        bubble.appendChild(replay);
-        els.chat.scrollTop = els.chat.scrollHeight;
-        if (els.autoSpeak.checked) speak(translated, other(lang));
-      } catch (err) {
-        translationEl.textContent = '';
-        setStatus(`Übersetzung fehlgeschlagen: ${err.message}`, true);
-      }
-    };
-
-    try {
-      rec.start();
-    } catch (err) {
-      conversation.rec = null;
-      setTalkState(null);
+    if (!text) {
       bubble.remove();
-      setStatus(`Spracherkennung konnte nicht starten: ${err.message}`, true);
+      return;
     }
+    originalEl.textContent = text;
+    originalEl.classList.remove('interim');
+    translationEl.textContent = '…';
+    try {
+      const translated = await translator.translate(text, lang, other(lang));
+      translationEl.textContent = translated;
+      const replay = document.createElement('button');
+      replay.className = 'small-btn';
+      replay.textContent = '🔊';
+      replay.title = 'Erneut vorlesen';
+      replay.addEventListener('click', () => { cancelSpeech(); speak(translated, other(lang)); });
+      bubble.appendChild(replay);
+      els.chat.scrollTop = els.chat.scrollHeight;
+      if (els.autoSpeak.checked) speak(translated, other(lang));
+    } catch (err) {
+      translationEl.textContent = '';
+      setStatus(`Übersetzung fehlgeschlagen: ${err.message}`, true);
+    }
+  }
+
+  // Antippen startet die Aufnahme; erneutes Antippen stoppt sie.
+  // Die andere Sprache kann jederzeit angetippt werden – dann wird direkt gewechselt.
+  async function talk(lang) {
+    const running = conversation.session;
+    const runningLang = conversation.lang;
+    if (running) {
+      conversation.session = null;
+      conversation.lang = null;
+      setTalkState(null);
+      await running.stop();
+      if (runningLang === lang) return;
+    }
+    if (conversation.session) return; // inzwischen anderweitig gestartet
+
+    cancelSpeech();
+    setStatus('');
+    const bubble = addBubble(lang);
+    const originalEl = bubble.querySelector('.original');
+
+    let ended = false;
+    let current = null;
+    current = listen(lang, {
+      onText(finalText, interim) {
+        originalEl.textContent = (finalText + ' ' + interim).trim() || '…';
+        els.chat.scrollTop = els.chat.scrollHeight;
+      },
+      onDone({ text, error, aborted }) {
+        ended = true;
+        if (conversation.session === current) {
+          conversation.session = null;
+          conversation.lang = null;
+          setTalkState(null);
+        }
+        if (error) setStatus(recognitionErrorText(error), true);
+        finishBubble(bubble, lang, aborted ? '' : text);
+      },
+    });
+    // Bei einem Startfehler ist die Sitzung sofort beendet und darf nicht als aktiv gelten.
+    if (ended) return;
+    conversation.session = current;
+    conversation.lang = lang;
+    setTalkState(lang);
   }
 
   els.talkBtns.forEach((btn) => btn.addEventListener('click', () => talk(btn.dataset.lang)));
@@ -400,7 +458,11 @@
   // ---------- Tabs & Einstellungen ----------
   els.tabs.forEach((tab) => tab.addEventListener('click', () => {
     if (wantListening) stopListening();
-    if (conversation.rec) conversation.rec.abort();
+    if (conversation.session) {
+      conversation.session.abort();
+      conversation.session = null;
+      setTalkState(null);
+    }
     els.tabs.forEach((t) => {
       const active = t === tab;
       t.classList.toggle('active', active);
